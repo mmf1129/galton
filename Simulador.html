@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Simulador – Tabuleiro de Galton</title>
+  <style>
+    :root {
+      --bg: #f7f7fb;
+      --panel: #ffffff;
+      --ink: #222;
+      --muted: #888;
+      --accent: #2563eb;
+      --grid: #ddd;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji"; }
+    .wrap { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+    header { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:12px; }
+    h1 { font-size: 20px; margin: 0; font-weight: 700; letter-spacing: .2px; }
+    .panel { background: var(--panel); border-radius: 14px; box-shadow: 0 10px 30px rgba(0,0,0,.06); padding: 14px 16px; }
+    .controls { display:grid; grid-template-columns: repeat(6, minmax(120px,1fr)); gap: 10px; align-items:end; }
+    .control { display:flex; flex-direction:column; gap:6px; }
+    .control label { font-size: 12px; color: var(--muted); }
+    input[type="number"], input[type="range"], select { width:100%; }
+    input[type="number"], select { padding: 8px 10px; border:1px solid #e6e6ef; border-radius: 10px; background: #fff; }
+    input[type="range"] { accent-color: var(--accent); }
+    button { padding: 10px 14px; border: 0; border-radius: 12px; font-weight: 600; cursor: pointer; }
+    .btn { background: var(--accent); color: #fff; }
+    .btn.secondary { background:#111827; }
+    .btn.ghost { background:#eef2ff; color:#1e40af; }
+    .canvas-wrap { margin-top: 14px; display:grid; gap: 12px; grid-template-columns: 1.2fr .8fr; }
+    canvas { width: 100%; height: auto; display:block; background:#fff; border-radius: 14px; box-shadow: 0 10px 30px rgba(0,0,0,.06); }
+    @media (max-width: 960px) { .controls { grid-template-columns: repeat(2, minmax(120px,1fr)); } .canvas-wrap{ grid-template-columns: 1fr; } }
+    .legend { font-size: 12px; color: var(--muted); display:flex; gap: 14px; align-items:center; }
+    .badge { width:14px; height:14px; border-radius:4px; background:#ddd; display:inline-block; }
+    .badge.sim { background:#dbeafe; }
+    .badge.theo { background:#fee2e2; }
+    footer { margin-top: 10px; color: var(--muted); font-size: 12px; text-align:center; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Simulador do Tabuleiro de Galton</h1>
+      <div class="legend panel">
+        <span class="badge sim"></span> Simulado
+        <span class="badge theo"></span> Teórico Binomial(n,p)
+      </div>
+    </header>
+
+    <section class="panel controls">
+      <div class="control">
+        <label>Níveis (n)</label>
+        <input id="levels" type="number" value="20" min="1" max="60" />
+      </div>
+      <div class="control">
+        <label>Probabilidade de "direita" (p)</label>
+        <input id="prob" type="number" step="0.01" value="0.50" min="0" max="1" />
+      </div>
+      <div class="control">
+        <label>Bolas por clique</label>
+        <input id="batch" type="number" value="1" min="1" max="20000" />
+      </div>
+      <div class="control">
+        <label>Velocidade</label>
+        <input id="speed" type="range" min="0" max="1" step="0.01" value="0.3" />
+      </div>
+      <div class="control">
+        <label>Cor da bola</label>
+        <input id="ballColor" type="color" value="#111111" />
+      </div>
+      <div class="control">
+        <button class="btn" id="drop">Lançar bolas</button>
+      </div>
+      <div class="control">
+        <button class="btn secondary" id="reset">Reiniciar</button>
+      </div>
+    </section>
+
+    <div class="canvas-wrap">
+      <canvas id="board" width="900" height="900" aria-label="Tabuleiro de Galton"></canvas>
+      <canvas id="hist" width="700" height="900" aria-label="Histograma"></canvas>
+    </div>
+
+    <footer>Regra do desenho dos pinos: a linha 0 tem 0 pinos; a linha r tem r pinos.</footer>
+  </div>
+
+<script>
+(() => {
+  // ---------- Utils ----------
+  const lerp = (a,b,t) => a + (b-a)*t;
+  function binom(n,k){
+    if(k<0||k>n) return 0;
+    k = Math.min(k, n-k);
+    let num=1, den=1;
+    for(let i=1;i<=k;i++){ num *= (n-(k-i)); den *= i; }
+    return num/den;
+  }
+
+  // ---------- Elements ----------
+  const board = document.getElementById('board');
+  const hist  = document.getElementById('hist');
+  const ctx = board.getContext('2d');
+  const htx = hist.getContext('2d');
+
+  // ---------- State ----------
+  let N = parseInt(document.getElementById('levels').value,10);
+  let p = parseFloat(document.getElementById('prob').value);
+  let batch = parseInt(document.getElementById('batch').value,10);
+  let speed = parseFloat(document.getElementById('speed').value);
+  let ballColor = document.getElementById('ballColor') ? document.getElementById('ballColor').value : '#111111';
+
+  let pegs = [];
+  let bins = new Array(N+1).fill(0);
+  let balls = [];
+  let total = 0;
+  let anim = null;
+
+  // ---------- Layout ----------
+  function layoutParams(){
+    const pad = 70;
+    const usable = Math.min(board.width, board.height) - 2*pad;
+    const rowGap = usable / (N+1);
+    const pegGapX = rowGap;
+    const baseY = pad;
+    return { pad, usable, rowGap, pegGapX, baseY };
+  }
+
+  function buildPegs(){
+    pegs = [];
+    const {rowGap, pegGapX, baseY} = layoutParams();
+    for(let r=1;r<=N;r++){
+      const y = baseY + r*rowGap;
+      for(let j=0;j<r;j++){
+        const x = (board.width/2) + (j - (r-1)/2) * pegGapX;
+        pegs.push({x,y,r,j});
+      }
+    }
+  }
+
+  function reset(){
+    buildPegs();
+    balls = [];
+    bins = new Array(N+1).fill(0);
+    total = 0;
+    draw();
+    drawHist();
+  }
+
+  // ---------- Simulation ----------
+  function spawnBalls(k){
+    const { baseY } = layoutParams();
+    for(let i=0;i<k;i++){
+      balls.push({ x: board.width/2, y: baseY - 20, row: 0, rights: 0, tweenFrames: 0, tweenDX: 0 });
+    }
+  }
+
+  function step(){
+    const {rowGap, pegGapX, baseY} = layoutParams();
+    const vy = lerp(2, 14, speed);
+    const vx = pegGapX/2;
+    const pegR = 3;
+    const binTop = baseY + (N+0.5)*rowGap;
+
+    const nextBalls = [];
+    for(const b of balls){
+      // lateral easing
+      if(b.tweenFrames > 0){ b.x += b.tweenDX; b.tweenFrames -= 1; }
+
+      // fall
+      b.y += vy;
+
+      // upcoming peg row
+      const rNext = b.row + 1;
+      const targetRowY = baseY + rNext*rowGap;
+      if(b.row < N && b.y >= targetRowY - pegR){
+        // align with the current peg (index = rights)
+        const j = b.rights;
+        const pegX = (board.width/2) + (j - (rNext-1)/2) * pegGapX;
+        // place the ball just BELOW the peg to avoid overlap
+        b.x = pegX;
+        b.y = targetRowY + (pegR + 2);
+        // decide direction and give an immediate lateral kick
+        const goRight = Math.random() < p;
+        const kick = vx * 0.5;
+        if(goRight){ b.rights += 1; b.x += kick; b.tweenDX =  (vx/10); }
+        else       {              b.x -= kick; b.tweenDX = -(vx/10); }
+        b.tweenFrames = 10;
+        b.row += 1;
+      }
+
+      // landed?
+      if(b.row >= N && b.y >= binTop){
+        const idx = Math.min(Math.max(0, b.rights), N);
+        bins[idx] += 1; total += 1;
+        continue; // do not keep this ball
+      }
+
+      nextBalls.push(b);
+    }
+    balls = nextBalls;
+  }
+
+  // ---------- Drawing ----------
+  function draw(){
+    const {pad, rowGap, pegGapX, baseY} = layoutParams();
+    ctx.clearRect(0,0,board.width,board.height);
+
+    // left numbering 0..N
+    ctx.save();
+    ctx.fillStyle = '#444';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.font = '14px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
+    for(let r=0;r<=N;r++){
+      const y = baseY + r*rowGap;
+      ctx.fillText(String(r), pad-18, y);
+    }
+    ctx.restore();
+
+    // left guide line
+    ctx.strokeStyle = '#e5e7eb';
+    ctx.beginPath();
+    ctx.moveTo(pad-10, baseY - rowGap*0.6);
+    ctx.lineTo(pad-10, baseY + (N+0.8)*rowGap);
+    ctx.stroke();
+
+    // bins and labels
+    const binTop = baseY + (N+0.5)*rowGap;
+    const binW = pegGapX; const binH = rowGap*0.7;
+    ctx.strokeStyle = '#c7c7d1';
+    ctx.fillStyle = '#374151';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.font = '12px system-ui';
+    for(let i=0;i<=N;i++){
+      const x = (board.width/2) + (i - N/2)*pegGapX - binW/2;
+      ctx.strokeRect(x, binTop, binW, binH);
+      const cx = x + binW/2;
+      ctx.fillText('k='+i, cx, binTop + binH + 4);
+    }
+
+    // balls (draw before pegs so pegs visually sit on top)
+    ctx.fillStyle = ballColor;
+    for(const b of balls){
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, 4, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    // pegs on top
+    ctx.fillStyle = '#111';
+    for(const pg of pegs){
+      ctx.beginPath();
+      ctx.arc(pg.x, pg.y, 3, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    // header
+    ctx.fillStyle = '#666';
+    ctx.font = '12px system-ui';
+    ctx.textAlign = 'left';
+    ctx.fillText(`n = ${N}, p = ${p.toFixed(2)} | bolas ativas: ${balls.length} | totais: ${total}`, pad, pad-26);
+  }
+
+  function drawHist(){
+    htx.clearRect(0,0,hist.width,hist.height);
+    const pad = 40; const W = hist.width - 2*pad; const H = hist.height - 2*pad;
+    const bw = W / (N+1); // largura por classe SEM depender de barras
+    const px = x => Math.round(x) + 0.5; // alinhamento pixel-perfect
+
+    // moldura
+    htx.strokeStyle = '#ddd';
+    htx.strokeRect(pad, pad, W, H);
+
+    // rótulo do eixo y
+    htx.save();
+    htx.translate(pad-24, pad + H/2);
+    htx.rotate(-Math.PI/2);
+    htx.fillStyle = '#444';
+    htx.font = '12px system-ui';
+    htx.textAlign = 'center';
+    htx.fillText('probabilidade', 0, 0);
+    htx.restore();
+
+    // Probabilidades: teórica e simulada
+    const probs = [];
+    for(let k=0;k<=N;k++) probs.push(binom(N,k) * Math.pow(p,k) * Math.pow(1-p,N-k));
+    const landed = bins.reduce((a,b)=>a+b,0);
+    const simProbs = []; for(let k=0;k<=N;k++) simProbs.push(landed>0 ? bins[k]/landed : 0);
+    const maxY = Math.max(1e-12, ...probs, ...simProbs);
+
+    // Curva teórica
+    htx.strokeStyle = '#ef4444';
+    htx.lineWidth = 2;
+    htx.beginPath();
+    for(let k=0;k<=N;k++){
+      const ph = H * (probs[k]/maxY);
+      const cx = pad + k*bw + bw/2;
+      const cy = pad + (H - ph);
+      if(k===0) htx.moveTo(px(cx), px(cy)); else htx.lineTo(px(cx), px(cy));
+    }
+    htx.stroke();
+
+    // Picos simulados – azul escuro uniforme, sem halos
+    htx.save();
+    htx.globalCompositeOperation = 'source-over';
+    htx.strokeStyle = '#60a5fa';
+    htx.lineWidth = 12;       // mesma largura em todos
+    htx.lineCap = 'butt';      // evitar arredondamento/halo
+    htx.lineJoin = 'miter';
+    for(let k=0;k<=N;k++){
+      const ph = H * (simProbs[k]/maxY);
+      const cx = pad + k*bw + bw/2;
+      const cy = pad + (H - ph);
+      htx.beginPath();
+      htx.moveTo(px(cx), px(pad+H));
+      htx.lineTo(px(cx), px(cy));
+      htx.stroke();
+    }
+    htx.restore();
+
+    // marcas no eixo x
+    htx.fillStyle = '#444';
+    htx.font = '12px system-ui';
+    htx.textAlign = 'center';
+    for(let k=0;k<=N;k+=Math.max(1, Math.round((N+1)/10))){
+      const x = pad + k*bw + bw/2;
+      htx.fillText(String(k), x, pad+H+16);
+    }
+    htx.textAlign = 'left';
+    htx.fillText('k (posição final)', pad, pad+H+32);
+  }
+
+  // ---------- Loop ----------
+  function tick(){
+    step();
+    draw();
+    drawHist();
+    anim = requestAnimationFrame(tick);
+  }
+
+  // ---------- UI ----------
+  document.getElementById('drop').addEventListener('click', () => {
+    spawnBalls(batch);
+    if(!anim) anim = requestAnimationFrame(tick);
+  });
+  document.getElementById('reset').addEventListener('click', () => {
+    if(anim) cancelAnimationFrame(anim);
+    anim = null; reset();
+  });
+  document.getElementById('levels').addEventListener('change', e => {
+    N = Math.max(1, Math.min(60, parseInt(e.target.value,10)||20));
+    bins = new Array(N+1).fill(0); buildPegs(); draw(); drawHist();
+  });
+  document.getElementById('prob').addEventListener('change', e => {
+    p = Math.max(0, Math.min(1, parseFloat(e.target.value)||0.5));
+  });
+  document.getElementById('batch').addEventListener('change', e => {
+    batch = Math.max(1, parseInt(e.target.value,10)||1);
+  });
+  document.getElementById('speed').addEventListener('input', e => {
+    speed = parseFloat(e.target.value);
+  });
+  const colorInput = document.getElementById('ballColor');
+  if(colorInput){ colorInput.addEventListener('input', e => { ballColor = e.target.value; }); }
+
+  // init
+  reset();
+})();
+</script>
+
+</body>
+</html>
