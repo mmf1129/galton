@@ -375,7 +375,7 @@
     anim = null; reset();
   });
   document.getElementById('levels').addEventListener('change', e => {
-    N = Math.max(1, Math.min(60, parseInt(e.target.value,10)||20));
+    N = Math.max(1, Math.min(40, parseInt(e.target.value,10)||20));
     bins = new Array(N+1).fill(0); buildPegs(); draw(); drawHist();
   });
   document.getElementById('prob').addEventListener('change', e => {
