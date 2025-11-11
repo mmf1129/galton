@@ -51,27 +51,34 @@
 
     <section class="panel controls">
       <div class="control">
-        <label>Ordem (n) - máx.30</label>
-        <input id="levels" type="number" value="20" min="1" max="30" />
+        <label>Ordem (n) - máx.40</label>
+        <input id="levels" type="number" value="20" min="1" max="40" />
       </div>
       <div class="control">
-        <label>Probabilidade de "direita" (p) - entre 0 e 1</label>
+        <label>Probabilidade de ir para a direita (p) - 0 a 1</label>
         <input id="prob" type="number" step="0.01" value="0.50" min="0" max="1" />
       </div>
       <div class="control">
-        <label>Bolas por clique</label>
-        <input id="batch" type="number" value="1" min="1" max="20000" />
+        <label>Bolas por clique - máx.10000</label>
+        <input id="batch" type="number" value="100" min="0" max="10000" />
       </div>
       <div class="control">
         <label>Velocidade</label>
-        <input id="speed" type="range" min="0" max="1" step="0.01" value="0.3" />
+        <input id="speed" type="range" min="0" max="1" step="0.01" value="0.20" />
+      </div>
+      <div class="control">
+        <label>Diferença de tempo de lançamento</label>
+        <input id="intervalFactor" type="range" min="0.1" max="1.5" step="0.05" value="0.50" />
       </div>
       <div class="control">
         <label>Cor da bola</label>
-        <input id="ballColor" type="color" value="#111111" />
+        <input id="ballColor" type="color" value="#ff0000" />
       </div>
       <div class="control">
         <button class="btn" id="drop">Lançar bolas</button>
+      </div>
+      <div class="control">
+        <button class="btn ghost" id="pause">Pausar</button>
       </div>
       <div class="control">
         <button class="btn secondary" id="reset">Reiniciar</button>
@@ -109,13 +116,16 @@
   let p = parseFloat(document.getElementById('prob').value);
   let batch = parseInt(document.getElementById('batch').value,10);
   let speed = parseFloat(document.getElementById('speed').value);
-  let ballColor = document.getElementById('ballColor') ? document.getElementById('ballColor').value : '#111111';
+  let intervalFactor = parseFloat(document.getElementById('intervalFactor').value);
+  let ballColor = document.getElementById('ballColor') ? document.getElementById('ballColor').value : '#ff0000';
 
   let pegs = [];
   let bins = new Array(N+1).fill(0);
   let balls = [];
   let total = 0;
   let anim = null;
+  let pendingSpawns = 0;   // para lançamento sequencial
+  let lastSpawnTs = 0;     // timestamp do último spawn
 
   // ---------- Layout ----------
   function layoutParams(){
@@ -144,44 +154,49 @@
     balls = [];
     bins = new Array(N+1).fill(0);
     total = 0;
+    pendingSpawns = 0;
+    lastSpawnTs = 0;
+    const pauseEl = document.getElementById('pause');
+    if(pauseEl) pauseEl.textContent = 'Pausar';
     draw();
     drawHist();
   }
 
-  // ---------- Simulation ----------
-  function spawnBalls(k){
+  // ---------- Spawns ----------
+  function spawnOne(){
     const { baseY } = layoutParams();
-    for(let i=0;i<k;i++){
-      balls.push({ x: board.width/2, y: baseY - 20, row: 0, rights: 0, tweenFrames: 0, tweenDX: 0 });
-    }
+    balls.push({ x: board.width/2, y: baseY - 20, row: 0, rights: 0, tweenFrames: 0, tweenDX: 0 });
+  }
+  function spawnBalls(k){ // compatibilidade
+    pendingSpawns += Math.max(1, k|0);
   }
 
+  // ---------- Simulation ----------
   function step(){
     const {rowGap, pegGapX, baseY} = layoutParams();
-    const vy = lerp(2, 14, speed);
-    const vx = pegGapX/2;
-    const pegR = 3;
+    const vy = lerp(2, 14, speed); // queda por frame
+    const vx = pegGapX/2;          // deslocação lateral por nível
+    const pegR = 3;                // raio do pino (px)
     const binTop = baseY + (N+0.5)*rowGap;
 
     const nextBalls = [];
     for(const b of balls){
-      // lateral easing
+      // easing lateral
       if(b.tweenFrames > 0){ b.x += b.tweenDX; b.tweenFrames -= 1; }
 
-      // fall
+      // queda
       b.y += vy;
 
-      // upcoming peg row
+      // próxima linha de pinos
       const rNext = b.row + 1;
       const targetRowY = baseY + rNext*rowGap;
       if(b.row < N && b.y >= targetRowY - pegR){
-        // align with the current peg (index = rights)
-        const j = b.rights;
+        // alinha com pino atingido e coloca logo abaixo para evitar sobreposição
+        const j = b.rights; // índice 0..rNext-1
         const pegX = (board.width/2) + (j - (rNext-1)/2) * pegGapX;
-        // place the ball just BELOW the peg to avoid overlap
         b.x = pegX;
         b.y = targetRowY + (pegR + 2);
-        // decide direction and give an immediate lateral kick
+        // decisão
         const goRight = Math.random() < p;
         const kick = vx * 0.5;
         if(goRight){ b.rights += 1; b.x += kick; b.tweenDX =  (vx/10); }
@@ -190,11 +205,11 @@
         b.row += 1;
       }
 
-      // landed?
+      // chegou ao bin?
       if(b.row >= N && b.y >= binTop){
         const idx = Math.min(Math.max(0, b.rights), N);
         bins[idx] += 1; total += 1;
-        continue; // do not keep this ball
+        continue; // não mantém ativa
       }
 
       nextBalls.push(b);
@@ -207,7 +222,7 @@
     const {pad, rowGap, pegGapX, baseY} = layoutParams();
     ctx.clearRect(0,0,board.width,board.height);
 
-    // left numbering 0..N
+    // numeração 0..N
     ctx.save();
     ctx.fillStyle = '#444';
     ctx.textAlign = 'right';
@@ -219,14 +234,14 @@
     }
     ctx.restore();
 
-    // left guide line
+    // guia esquerda
     ctx.strokeStyle = '#e5e7eb';
     ctx.beginPath();
     ctx.moveTo(pad-10, baseY - rowGap*0.6);
     ctx.lineTo(pad-10, baseY + (N+0.8)*rowGap);
     ctx.stroke();
 
-    // bins and labels
+    // bins e rótulos k=0..N
     const binTop = baseY + (N+0.5)*rowGap;
     const binW = pegGapX; const binH = rowGap*0.7;
     ctx.strokeStyle = '#c7c7d1';
@@ -241,7 +256,7 @@
       ctx.fillText('k='+i, cx, binTop + binH + 4);
     }
 
-    // balls (draw before pegs so pegs visually sit on top)
+    // bolas (antes dos pinos)
     ctx.fillStyle = ballColor;
     for(const b of balls){
       ctx.beginPath();
@@ -249,7 +264,7 @@
       ctx.fill();
     }
 
-    // pegs on top
+    // pinos por cima
     ctx.fillStyle = '#111';
     for(const pg of pegs){
       ctx.beginPath();
@@ -257,7 +272,7 @@
       ctx.fill();
     }
 
-    // header
+    // cabeçalho
     ctx.fillStyle = '#666';
     ctx.font = '12px system-ui';
     ctx.textAlign = 'left';
@@ -267,14 +282,14 @@
   function drawHist(){
     htx.clearRect(0,0,hist.width,hist.height);
     const pad = 40; const W = hist.width - 2*pad; const H = hist.height - 2*pad;
-    const bw = W / (N+1); // largura por classe SEM depender de barras
-    const px = x => Math.round(x) + 0.5; // alinhamento pixel-perfect
+    const bw = W / (N+1);
+    const px = x => Math.round(x) + 0.5;
 
     // moldura
     htx.strokeStyle = '#ddd';
     htx.strokeRect(pad, pad, W, H);
 
-    // rótulo do eixo y
+    // eixo y
     htx.save();
     htx.translate(pad-24, pad + H/2);
     htx.rotate(-Math.PI/2);
@@ -284,7 +299,7 @@
     htx.fillText('probabilidade', 0, 0);
     htx.restore();
 
-    // Probabilidades: teórica e simulada
+    // Probabilidades
     const probs = [];
     for(let k=0;k<=N;k++) probs.push(binom(N,k) * Math.pow(p,k) * Math.pow(1-p,N-k));
     const landed = bins.reduce((a,b)=>a+b,0);
@@ -303,12 +318,12 @@
     }
     htx.stroke();
 
-    // Picos simulados – azul escuro uniforme, sem halos
+    // Picos simulados (azul, espessura controlada)
     htx.save();
     htx.globalCompositeOperation = 'source-over';
-    htx.strokeStyle = '#60a5fa';
-    htx.lineWidth = 12;       // mesma largura em todos
-    htx.lineCap = 'butt';      // evitar arredondamento/halo
+    htx.strokeStyle = '#60a5fa'; // azul médio
+    htx.lineWidth = 12;          // espessura atual
+    htx.lineCap = 'butt';
     htx.lineJoin = 'miter';
     for(let k=0;k<=N;k++){
       const ph = H * (simProbs[k]/maxY);
@@ -321,7 +336,7 @@
     }
     htx.restore();
 
-    // marcas no eixo x
+    // eixo x
     htx.fillStyle = '#444';
     htx.font = '12px system-ui';
     htx.textAlign = 'center';
@@ -335,6 +350,15 @@
 
   // ---------- Loop ----------
   function tick(){
+    // lançamento sequencial
+    const now = performance.now();
+    const minInterval = (220 + 400*speed) * intervalFactor; // ms
+    if(pendingSpawns > 0 && (now - lastSpawnTs >= minInterval)){
+      spawnOne();
+      pendingSpawns -= 1;
+      lastSpawnTs = now;
+    }
+
     step();
     draw();
     drawHist();
@@ -343,15 +367,15 @@
 
   // ---------- UI ----------
   document.getElementById('drop').addEventListener('click', () => {
-    spawnBalls(batch);
-    if(!anim) anim = requestAnimationFrame(tick);
+    pendingSpawns += Math.max(1, batch);
+    if(!anim){ lastSpawnTs = 0; anim = requestAnimationFrame(tick); }
   });
   document.getElementById('reset').addEventListener('click', () => {
     if(anim) cancelAnimationFrame(anim);
     anim = null; reset();
   });
   document.getElementById('levels').addEventListener('change', e => {
-    N = Math.max(1, Math.min(30, parseInt(e.target.value,10)||20));
+    N = Math.max(1, Math.min(60, parseInt(e.target.value,10)||20));
     bins = new Array(N+1).fill(0); buildPegs(); draw(); drawHist();
   });
   document.getElementById('prob').addEventListener('change', e => {
@@ -363,8 +387,25 @@
   document.getElementById('speed').addEventListener('input', e => {
     speed = parseFloat(e.target.value);
   });
+  const intervalInput = document.getElementById('intervalFactor');
+  if(intervalInput){ intervalInput.addEventListener('input', e => { intervalFactor = parseFloat(e.target.value); }); }
   const colorInput = document.getElementById('ballColor');
   if(colorInput){ colorInput.addEventListener('input', e => { ballColor = e.target.value; }); }
+
+  const pauseBtn = document.getElementById('pause');
+  if(pauseBtn){
+    pauseBtn.addEventListener('click', () => {
+      if(anim){
+        cancelAnimationFrame(anim);
+        anim = null;
+        pauseBtn.textContent = 'Continuar';
+      } else {
+        lastSpawnTs = 0;
+        anim = requestAnimationFrame(tick);
+        pauseBtn.textContent = 'Pausar';
+      }
+    });
+  }
 
   // init
   reset();
